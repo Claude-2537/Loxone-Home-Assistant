@@ -93,6 +93,62 @@ def parse_text_state_table(data: bytes) -> dict[str, str]:
     return values
 
 
+@slotted_dataclass
+class DaytimerEntry:
+    """One Loxone Daytimer entry."""
+
+    mode: int
+    from_minute: int
+    to_minute: int
+    need_activate: int
+    value: float
+
+
+@slotted_dataclass
+class DaytimerState:
+    """One Loxone Daytimer table."""
+
+    default_value: float
+    entries: list[DaytimerEntry]
+
+
+def parse_daytimer_state_table(data: bytes) -> dict[str, DaytimerState]:
+    """Parse a binary Loxone Daytimer state table."""
+    values: dict[str, DaytimerState] = {}
+    offset = 0
+
+    while offset + 28 <= len(data):
+        state_uuid = _loxone_uuid_from_bytes_le(data[offset : offset + 16])
+        offset += 16
+        default_value = struct.unpack("<d", data[offset : offset + 8])[0]
+        offset += 8
+        entry_count = struct.unpack("<i", data[offset : offset + 4])[0]
+        offset += 4
+
+        if entry_count < 0 or entry_count > 1000:
+            break
+
+        # Every Daytimer entry is exactly 24 bytes. Reject a truncated
+        # table instead of exposing a partial schedule or losing alignment.
+        entries_size = entry_count * 24
+        if offset + entries_size > len(data):
+            break
+
+        entries: list[DaytimerEntry] = []
+        for _ in range(entry_count):
+            mode, from_minute, to_minute, need_activate = struct.unpack(
+                "<iiii", data[offset : offset + 16]
+            )
+            offset += 16
+            value = struct.unpack("<d", data[offset : offset + 8])[0]
+            offset += 8
+            entries.append(DaytimerEntry(mode, from_minute, to_minute, need_activate, value))
+
+        values[state_uuid] = DaytimerState(default_value, entries)
+
+    return values
+
+
 def deserialize_value(value: Any) -> Any:
     """Deserialize JSON-like values returned by the Miniserver."""
     if not isinstance(value, str):
