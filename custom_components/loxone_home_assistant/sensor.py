@@ -355,6 +355,14 @@ STATE_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f]+")
 EVENT_LOG_ATTRIBUTE_MAX_ENTRIES = 50
 
 
+def _daytimer_minute_text(value: int) -> str:
+    """Format Loxone minutes-since-midnight as HH:MM without losing raw value."""
+    if value < 0:
+        return str(value)
+    hours, minutes = divmod(value, 60)
+    return f"{hours:02d}:{minutes:02d}"
+
+
 def _normalized_unit(value: str | None) -> str | None:
     if value is None:
         return None
@@ -1372,6 +1380,13 @@ class LoxoneSingleStateSensor(LoxoneEntity, SensorEntity):
 class LoxonePrimarySensor(LoxoneEntity, SensorEntity):
     """Primary read-only sensor for one Loxone control."""
 
+    def relevant_state_uuids(self):
+        uuids = list(super().relevant_state_uuids())
+        if self.control.type == "Daytimer" and self.control.uuid_action:
+            if self.control.uuid_action not in uuids:
+                uuids.append(self.control.uuid_action)
+        return uuids
+
     def _primary_state_name(self) -> str | None:
         state_name, _ = control_primary_state(self.control)
         return state_name
@@ -1422,6 +1437,36 @@ class LoxonePrimarySensor(LoxoneEntity, SensorEntity):
             return SensorStateClass.TOTAL_INCREASING
 
         return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        attrs = super().extra_state_attributes
+        if self.control.type != "Daytimer":
+            return attrs
+
+        daytimer = self.bridge.daytimer_value(self.control.uuid_action)
+        if daytimer is None:
+            return attrs
+
+        attrs["daytimer_default_value"] = daytimer.default_value
+        schedule: list[dict[str, Any]] = []
+        for entry in daytimer.entries:
+            mode_name = self.bridge.operating_modes.get(str(entry.mode))
+            item: dict[str, Any] = {
+                "mode": entry.mode,
+                "from_minute": entry.from_minute,
+                "to_minute": entry.to_minute,
+                "start": _daytimer_minute_text(entry.from_minute),
+                "end": _daytimer_minute_text(entry.to_minute),
+                "need_activate": bool(entry.need_activate),
+                "value": entry.value,
+            }
+            if mode_name:
+                item["mode_name"] = mode_name
+            schedule.append(item)
+        attrs["schedule"] = schedule
+        attrs["schedule_entry_count"] = len(schedule)
+        return attrs
 
 
 class LoxoneMiniserverSystemSensor(SensorEntity):
