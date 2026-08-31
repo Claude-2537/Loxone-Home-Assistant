@@ -67,6 +67,7 @@ from .protocol import (
     deserialize_value,
     normalize_uuid,
     parse_api_key_payload,
+    parse_daytimer_state_table,
     parse_header,
     parse_text_state_table,
     parse_value_state_table,
@@ -99,6 +100,7 @@ OUT_OF_SERVICE = 5
 TEXT_MESSAGE = 0
 VALUE_STATE_TABLE = 2
 TEXT_STATE_TABLE = 3
+DAYTIMER_STATE_TABLE = 4
 CLOUD_DNS_HOST = "dns.loxonecloud.com"
 _MAC_PLAIN_RE = re.compile(r"^[0-9A-Fa-f]{12}$")
 _MAC_SEPARATED_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
@@ -267,6 +269,7 @@ class LoxoneBridge:
 
         self.structure: LoxoneStructure | None = None
         self.state_values: dict[str, Any] = {}
+        self.daytimer_values: dict[str, Any] = {}
         self.available = False
         configured_server_model = str(
             data.get(CONF_SERVER_MODEL, DEFAULT_SERVER_MODEL)
@@ -388,6 +391,12 @@ class LoxoneBridge:
     def control_state(self, control: LoxoneControl, state_name: str) -> Any:
         """Return one named state of a control."""
         return self.state_value(control.state_uuid(state_name))
+
+    def daytimer_value(self, uuid_action: str | None) -> Any:
+        """Return the latest Daytimer table for a control action UUID."""
+        if uuid_action is None:
+            return None
+        return self.daytimer_values.get(normalize_uuid(uuid_action))
 
     def system_stat_state_uuid(self, metric_key: str) -> str:
         """Return synthetic state UUID used for system diagnostics metrics."""
@@ -731,6 +740,20 @@ class LoxoneBridge:
         if header.identifier == TEXT_STATE_TABLE:
             changed = parse_text_state_table(data)
             self._merge_changed_states(changed)
+            return
+
+        if header.identifier == DAYTIMER_STATE_TABLE:
+            daytimers = parse_daytimer_state_table(data)
+            normalized = {
+                normalize_uuid(daytimer_uuid): daytimer
+                for daytimer_uuid, daytimer in daytimers.items()
+            }
+            if normalized:
+                self.daytimer_values.update(normalized)
+                # Daytimer binary events are keyed by the control uuidAction.
+                # Notify entities watching that UUID without mixing schedule
+                # objects into the normal scalar state map.
+                self._notify_listeners(set(normalized))
             return
 
         if header.identifier == TEXT_MESSAGE:
